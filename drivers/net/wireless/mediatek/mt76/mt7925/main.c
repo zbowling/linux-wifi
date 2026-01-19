@@ -1232,11 +1232,17 @@ static void mt7925_mac_link_sta_assoc(struct mt76_dev *mdev,
 
 	if (link_conf && vif->type == NL80211_IFTYPE_STATION && !link_sta->sta->tdls) {
 		struct mt792x_bss_conf *mconf;
+		int ret;
 
 		mconf = mt792x_link_conf_to_mconf(link_conf);
-		if (mconf)
-			mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx,
-						link_conf, link_sta, true);
+		if (mconf) {
+			ret = mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx,
+						      link_conf, link_sta, true);
+			if (ret)
+				dev_warn(dev->mt76.dev,
+					 "failed to update BSS info during beacon loss (ret=%d)\n",
+					 ret);
+		}
 	}
 
 	ewma_avg_signal_init(&mlink->avg_ack_signal);
@@ -1304,16 +1310,21 @@ static void mt7925_mac_link_sta_remove(struct mt76_dev *mdev,
 
 	if (link_conf && vif->type == NL80211_IFTYPE_STATION && !link_sta->sta->tdls) {
 		struct mt792x_bss_conf *mconf;
+		int ret;
 
 		mconf = mt792x_link_conf_to_mconf(link_conf);
 		if (!mconf)
 			goto out;
 
-		if (ieee80211_vif_is_mld(vif))
+		if (ieee80211_vif_is_mld(vif)) {
 			mt792x_mac_link_bss_remove(dev, mconf, mlink);
-		else
-			mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx, link_conf,
-						link_sta, false);
+		} else {
+			ret = mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx,
+						      link_conf, link_sta, false);
+			if (ret)
+				dev_warn(dev->mt76.dev,
+					 "failed to remove BSS info (ret=%d)\n", ret);
+		}
 	}
 out:
 
@@ -1333,6 +1344,7 @@ mt7925_mac_sta_remove_links(struct mt792x_dev *dev, struct ieee80211_vif *vif,
 	struct mt76_dev *mdev = &dev->mt76;
 	struct mt76_wcid *wcid;
 	unsigned int link_id;
+	int ret;
 
 	/* clean up bss before starec */
 	for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
@@ -1357,9 +1369,14 @@ mt7925_mac_sta_remove_links(struct mt792x_dev *dev, struct ieee80211_vif *vif,
 			continue;
 
 		mconf = mt792x_link_conf_to_mconf(link_conf);
+		if (!mconf)
+			continue;
 
-		mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx, link_conf,
-					link_sta, false);
+		ret = mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx,
+					      link_conf, link_sta, false);
+		if (ret)
+			dev_warn(dev->mt76.dev,
+				 "failed to remove link BSS info (ret=%d)\n", ret);
 	}
 
 	for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
@@ -1984,8 +2001,11 @@ mt7925_stop_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	if (err)
 		goto out;
 
-	mt7925_mcu_add_bss_info(&dev->phy, mvif->bss_conf.mt76.ctx, link_conf,
-				NULL, false);
+	err = mt7925_mcu_add_bss_info(&dev->phy, mvif->bss_conf.mt76.ctx,
+				      link_conf, NULL, false);
+	if (err)
+		dev_warn(dev->mt76.dev,
+			 "failed to remove BSS info in stop_ap (ret=%d)\n", err);
 
 out:
 	mt792x_mutex_release(dev);
@@ -2353,6 +2373,7 @@ static int mt7925_assign_vif_chanctx(struct ieee80211_hw *hw,
 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
 	struct ieee80211_bss_conf *pri_link_conf;
 	struct mt792x_bss_conf *mconf;
+	int ret;
 
 	mutex_lock(&dev->mt76.mutex);
 
@@ -2366,9 +2387,14 @@ static int mt7925_assign_vif_chanctx(struct ieee80211_hw *hw,
 		pri_link_conf = mt792x_vif_to_bss_conf(vif, mvif->deflink_id);
 
 		if (pri_link_conf && vif->type == NL80211_IFTYPE_STATION &&
-		    mconf == &mvif->bss_conf)
-			mt7925_mcu_add_bss_info(&dev->phy, NULL, pri_link_conf,
-						NULL, true);
+		    mconf == &mvif->bss_conf) {
+			ret = mt7925_mcu_add_bss_info(&dev->phy, NULL,
+						      pri_link_conf, NULL, true);
+			if (ret)
+				dev_warn(dev->mt76.dev,
+					 "failed to add BSS info in chanctx assign (ret=%d)\n",
+					 ret);
+		}
 	} else {
 		mconf = &mvif->bss_conf;
 	}
@@ -2389,6 +2415,7 @@ static void mt7925_unassign_vif_chanctx(struct ieee80211_hw *hw,
 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
 	struct mt792x_bss_conf *mconf;
+	int ret;
 
 	mutex_lock(&dev->mt76.mutex);
 
@@ -2400,9 +2427,14 @@ static void mt7925_unassign_vif_chanctx(struct ieee80211_hw *hw,
 		}
 
 		if (vif->type == NL80211_IFTYPE_STATION &&
-		    mconf == &mvif->bss_conf)
-			mt7925_mcu_add_bss_info(&dev->phy, NULL, link_conf,
-						NULL, false);
+		    mconf == &mvif->bss_conf) {
+			ret = mt7925_mcu_add_bss_info(&dev->phy, NULL, link_conf,
+						      NULL, false);
+			if (ret)
+				dev_warn(dev->mt76.dev,
+					 "failed to remove BSS info in chanctx unassign (ret=%d)\n",
+					 ret);
+		}
 	} else {
 		mconf = &mvif->bss_conf;
 	}
